@@ -550,7 +550,6 @@ class FunctionSet:
 
             with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
                 results = executor.map(find_best_surface_chunked, chunks)
-
             parametric_coordinates = []
             for result in results:
                 parametric_coordinates.extend(result)
@@ -837,9 +836,9 @@ class FunctionSet:
             scalarbar = plotting_elements[-1].add_scalarbar()
         if show:
             if self.name is not None:
-                lfs.show_plot(plotting_elements=plotting_elements, title=self.name)
+                lfs.show_plot(plotting_elements=plotting_elements, title=self.name, axes=0)
             else:
-                lfs.show_plot(plotting_elements=plotting_elements, title='Function Set Plot')
+                lfs.show_plot(plotting_elements=plotting_elements, title='Function Set Plot', axes=0)
         return plotting_elements
     
     def create_parallel_space(self, function_space:lfs.FunctionSpace) -> lfs.FunctionSetSpace:

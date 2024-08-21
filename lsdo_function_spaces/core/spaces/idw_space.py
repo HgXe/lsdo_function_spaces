@@ -44,8 +44,8 @@ class IDWFunctionSpace(FunctionSpace):
         self.points = points
         self.n_neighbors = n_neighbors
 
-        if n_neighbors is not None and conserve:
-            raise ValueError('IDWFunctionSpace does not support n_neighbors and conserve=True simultaneously')
+        # if n_neighbors is not None and conserve:
+        #     raise ValueError('IDWFunctionSpace does not support n_neighbors and conserve=True simultaneously')
         
 
         if self.points is None:
@@ -175,10 +175,15 @@ class IDWFunctionSpace(FunctionSpace):
             # assemble a sparse matrix with the weights of the n_neighbors closest points
             from sklearn.neighbors import NearestNeighbors
             nbrs = NearestNeighbors(n_neighbors=self.n_neighbors, algorithm='ball_tree').fit(self.points)
-            distances, indices = nbrs.kneighbors(parametric_coordinates)
+            dist, indices = nbrs.kneighbors(parametric_coordinates)
             with np.errstate(divide='ignore', invalid='ignore'):
-                weights = 1.0/distances**self.order
-                weights /= weights.sum(axis=1)[:, np.newaxis]
+                weights = 1.0/dist**self.order
+                if self.conserve:
+                    weights = weights.T
+                    weights /= weights.sum(axis=1)[:, np.newaxis]
+                    weights = weights.T
+                else:
+                    weights /= weights.sum(axis=1)[:, np.newaxis]
             np.nan_to_num(weights, copy=False, nan=1.)
             inv_indices = np.repeat(np.arange(indices.shape[0]), indices.shape[1])
             weights = sps.csr_matrix((weights.ravel(), (inv_indices, indices.ravel())), shape=(parametric_coordinates.shape[0], self.points.shape[0]))

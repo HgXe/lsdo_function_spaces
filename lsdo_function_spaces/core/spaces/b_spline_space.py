@@ -10,6 +10,96 @@ from lsdo_b_splines_cython.cython.basis_matrix_surface_py import get_basis_surfa
 from lsdo_b_splines_cython.cython.basis_matrix_volume_py import get_basis_volume_matrix
 from lsdo_b_splines_cython.cython.get_open_uniform_py import get_open_uniform
 
+class BSplineSurfaceMatrixProduct(csdl.CustomExplicitOperation):
+    def __init__(self, num_phys, 
+                 order_u, knots_u, coefficients_shape_u,
+                 order_v, knots_v, coefficients_shape_v):
+        super().__init__()
+        
+        self.order_u = order_u
+        self.knots_u = knots_u
+        self.coefficients_shape_u = coefficients_shape_u
+        self.order_v = order_v
+        self.knots_v = knots_v
+        self.coefficients_shape_v = coefficients_shape_v
+        self.num_phys = num_phys
+        self.num_parametric_dimensions = 2
+
+    def evaluate(self, parametric_coordinates, coefficients):
+        if len(parametric_coordinates.shape) != 2:
+            parametric_coordinates = parametric_coordinates.reshape((-1, self.num_parametric_dimensions))
+        if len(coefficients.shape) != 2:
+            coefficients = coefficients.reshape((-1, self.num_phys))
+        
+        u_vec = parametric_coordinates[:,0]
+        self.declare_input("u_vec", u_vec)
+        v_vec = parametric_coordinates[:,1]
+        self.declare_input("v_vec", v_vec)
+        self.declare_input("coefficients", coefficients)
+        
+        num_points = u_vec.shape[0]
+        output = self.create_output("output", (num_points * coefficients,))
+
+        return output
+    
+    def compute(self, input_vals, output_vals):
+        u_vec = input_vals["u_vec"]
+        v_vec = input_vals["v_vec"]
+        coefficients = input_vals["coefficients"]
+
+        num_points = u_vec.shape[0]
+        order_multiplied = self.order_u * self.order_v
+        data = np.zeros(num_points * order_multiplied) 
+        row_indices = self.row_indices
+        col_indices = self.col_indices
+
+        get_basis_surface_matrix(self.order_u, self.coefficients_shape_u, 0, u_vec, self.knots_u, 
+                                 self.order_v, self.coefficients_shape_v, 0, v_vec, self.knots_v, 
+                                 num_points, data, row_indices, col_indices)
+        
+        matrix = sps.csr_matrix((data, (row_indices, col_indices)), shape=(len(u_vec), self.num_phys))
+
+        output_vals["output"] = matrix @ coefficients
+
+    def compute_derivatives(self, input_vals, output_vals, derivatives):
+        u_vec = input_vals["u_vec"]
+        v_vec = input_vals["v_vec"]
+        coefficients = input_vals["coefficients"]
+
+
+        num_points = u_vec.shape[0]
+        order_multiplied = self.order_u * self.order_v
+
+        data = np.zeros(num_points * order_multiplied)
+        row_indices = np.zeros(data.shape[0], np.int32)
+        col_indices = np.zeros(data.shape[0], np.int32)
+
+        data_u = np.zeros(num_points * order_multiplied) 
+        row_indices_u = np.zeros(data.shape[0], np.int32)
+        col_indices_u = np.zeros(data.shape[0], np.int32)
+
+        data_v = np.zeros(num_points * order_multiplied)
+        row_indices_v = np.zeros(data.shape[0], np.int32)
+        col_indices_v = np.zeros(data.shape[0], np.int32)
+
+        get_basis_surface_matrix(self.order_u, self.coefficients_shape_u, 0, u_vec, self.knots_u, 
+                                 self.order_v, self.coefficients_shape_v, 0, v_vec, self.knots_v, 
+                                 num_points, data, row_indices, col_indices)
+
+        get_basis_surface_matrix(self.order_u, self.coefficients_shape_u, 1, u_vec, self.knots_u, 
+                                 self.order_v, self.coefficients_shape_v, 0, v_vec, self.knots_v, 
+                                 num_points, data_u, row_indices_u, col_indices_u)
+        
+        get_basis_surface_matrix(self.order_u, self.coefficients_shape_u, 0, u_vec, self.knots_u, 
+                                 self.order_v, self.coefficients_shape_v, 1, v_vec, self.knots_v, 
+                                 num_points, data_v, row_indices_v, col_indices_v)
+        
+        derivatives['output', 'u_vec'] = sps.csr_matrix((data_u, (row_indices_u, col_indices_u)), shape=(len(u_vec), self.num_phys)) @ coefficients
+        derivatives['output', 'v_vec'] = sps.csr_matrix((data_v, (row_indices_v, col_indices_v)), shape=(len(u_vec), self.num_phys)) @ coefficients
+        derivatives['output', 'coefficients'] = sps.csr_matrix((data, (row_indices, col_indices)), shape=(len(u_vec), self.num_phys))
+
+
+
 class BSplineSpace(FunctionSpace):
     '''
     Class for representing the space of BSplineFunctions of a particular degree.
@@ -125,8 +215,6 @@ class BSplineSpace(FunctionSpace):
         
         return self_coeffs, other_coeffs
 
-
-
     def compute_basis_matrix(self, parametric_coordinates: np.ndarray, parametric_derivative_orders: np.ndarray = None,
                                    expansion_factor:int=None) -> sps.csc_matrix:
         '''
@@ -237,7 +325,6 @@ class BSplineSpace(FunctionSpace):
         else:
             return basis_matrix
         
-
     def _compute_distance_bounds(self, point:np.ndarray, function:Function, direction=None) -> float:
         '''
         Computes the distance bounds for the given point.
@@ -270,6 +357,29 @@ class BSplineSpace(FunctionSpace):
             closest_point_on_line = point + t * direction
             return np.linalg.norm(closest_point_on_line - closest_point)
 
+    def compute_basis_coeff_product(self, num_phys, parametric_coordinates:csdl.Variable, coefficients:csdl.Variable):
+        """
+        Compute the product of the basis matrix and the coefficients.
+
+        Parameters
+        ----------
+        num_phys : int
+            The number of physical dimensions.
+        parametric_coordinates : csdl.Variable
+            The parametric coordinates at which to evaluate the basis functions.
+        coefficients : csdl.Variable
+            The coefficients of the function.
+
+        Returns
+        -------
+        csdl.Variable
+            The product of the basis matrix and the coefficients.
+
+        """
+        return BSplineSurfaceMatrixProduct(num_phys=num_phys, 
+                                           order_u=self.degree[0], knots_u=self.knots[self.knot_indices[0]], coefficients_shape_u=self.coefficients_shape[0],
+                                           order_v=self.degree[1], knots_v=self.knots[self.knot_indices[1]], coefficients_shape_v=self.coefficients_shape[1]
+                                           ).evaluate(parametric_coordinates, coefficients)
         
     def _generate_projection_grid_search_resolution(self, grid_search_density_parameter=1):
         '''
@@ -285,6 +395,7 @@ def test_single_surface():
     import csdl_alpha as csdl
     recorder = csdl.Recorder(inline=True)
     recorder.start()
+    np.random.seed(0)
 
     num_coefficients = 5
     space_of_linear_25_cp_b_spline_surfaces = BSplineSpace(num_parametric_dimensions=2, degree=(2,2), 
@@ -316,7 +427,7 @@ def test_single_surface():
     # projecting_points_z = np.zeros((6,))
     # projecting_points = np.stack((parametric_coordinates[:,0], parametric_coordinates[:,1], projecting_points_z), axis=-1)
 
-    num_points = 50
+    num_points = 100000
     x_coordinates = np.random.rand(num_points)
     y_coordinates = np.random.rand(num_points)
     z_coordinates = np.zeros((num_points,))
@@ -326,11 +437,32 @@ def test_single_surface():
     num_trials = 1
     t1 = time.time()
     for i in range(num_trials):
-        projected_points_parametric = b_spline.project(points=projecting_points, plot=False, grid_search_density_parameter=1)
+        projected_points_parametric = b_spline.project_csdl(points=projecting_points, 
+                                                            plot=False, 
+                                                            grid_search_density_parameter=10, 
+                                                            force_reproject=True,
+                                                            direction=None,
+                                                            do_pickles=False)
+                                                            # direction=[0.,0.,1.])
     t2 = time.time()
-    print('average time: ', (t2-t1)/num_trials)
-    projected_points = b_spline.evaluate(parametric_coordinates=projected_points_parametric, plot=False).value
+    print('csdl average time: ', (t2-t1)/num_trials)
+    b_spline._grid_searches = {}
+    t1 = time.time()
+    for i in range(num_trials):
+        projected_points_parametric = b_spline.project(points=projecting_points, 
+                                                            plot=False, 
+                                                            grid_search_density_parameter=10, 
+                                                            force_reproject=True,
+                                                            direction=None,
+                                                            do_pickles=False)
+                                                            # direction=[0.,0.,1.])
+    t2 = time.time()
+    print('numpy average time: ', (t2-t1)/num_trials)
 
+    exit()
+
+    projected_points = b_spline.evaluate(parametric_coordinates=projected_points_parametric, plot=False).value
+    exit()
     import vedo
     # b_spline_plot = b_spline.plot(show=False, opacity=0.8)
     # projected_points_plot = vedo.Points(projected_points, r=10, c='g')
@@ -340,7 +472,7 @@ def test_single_surface():
     new_b_spline_space = lfs.BSplineSpace(num_parametric_dimensions=2, degree=(1,1), coefficients_shape=(4,4))
     new_b_spline = b_spline.refit(new_function_space=new_b_spline_space)
     # new_b_spline.plot()
-    projected_points_parametric = new_b_spline.project(points=projecting_points, plot=False, grid_search_density_parameter=1)
+    projected_points_parametric = new_b_spline.project_csdl(points=projecting_points, plot=True, grid_search_density_parameter=1)
     projected_points = new_b_spline.evaluate(parametric_coordinates=projected_points_parametric).value
     new_b_spline_plot = new_b_spline.plot(show=False, opacity=0.8)
     projected_points_plot = vedo.Points(projected_points, r=10, c='g')
@@ -398,7 +530,7 @@ def test_multiple_surfaces():
     my_b_spline_surface_set = lfs.FunctionSet(functions=[b_spline1, b_spline2], function_names=['b_spline1', 'b_spline2'])
 
 
-    num_points = 10000
+    num_points = 100
     x_coordinates = np.random.rand(num_points)
     y_coordinates = np.random.rand(num_points)
     z_coordinates = np.zeros((num_points,))
@@ -413,7 +545,7 @@ def test_multiple_surfaces():
     num_trials = 1
     t1 = time.time()
     for i in range(num_trials):
-        projected_points_parametric = my_b_spline_surface_set.project(points=projecting_points, plot=False, grid_search_density_parameter=1)
+        projected_points_parametric = my_b_spline_surface_set.project(points=projecting_points, plot=True, grid_search_density_parameter=1)
     t2 = time.time()
     print('average time: ', (t2-t1)/num_trials)
     projected_points = my_b_spline_surface_set.evaluate(parametric_coordinates=projected_points_parametric, plot=True).value
@@ -426,4 +558,4 @@ def test_multiple_surfaces():
 
 if __name__ == '__main__':
     test_single_surface()
-    test_multiple_surfaces()
+    # test_multiple_surfaces()

@@ -15,6 +15,148 @@ import random
 # from lsdo_function_spaces.core.function_space import FunctionSpace
 import lsdo_function_spaces as lfs
 
+class CustomSurfaceMatrixProduct(csdl.CustomExplicitOperation):
+    def __init__(self, function:lfs.Function):
+        super().__init__()
+        
+        self.function = function
+        self.num_parametric_dimensions = 2
+        self.num_phys = function.num_physical_dimensions
+        coefficients = function.coefficients
+        if isinstance(coefficients, csdl.Variable):
+            coefficients = coefficients.value
+        if len(coefficients.shape) != 2:
+            coefficients = coefficients.reshape((-1, self.num_phys))
+        self.coefficients = coefficients
+
+    def evaluate(self, parametric_coordinates): # , coefficients):
+        if len(parametric_coordinates.shape) != 2:
+            parametric_coordinates = parametric_coordinates.reshape((-1, self.num_parametric_dimensions))
+        # if len(coefficients.shape) != 2:
+        #     coefficients = coefficients.reshape((-1, self.num_phys))
+        
+        u_vec = parametric_coordinates[:,0]
+        self.declare_input("u_vec", u_vec)
+        v_vec = parametric_coordinates[:,1]
+        self.declare_input("v_vec", v_vec)
+        # self.declare_input("coefficients", coefficients)
+        
+        num_points = u_vec.shape[0]
+        output = self.create_output("output", (num_points, self.num_phys))
+
+        return output
+    
+    def compute(self, input_vals, output_vals):
+        u_vec = input_vals["u_vec"]
+        v_vec = input_vals["v_vec"]
+        parametric_coordinates = np.hstack((u_vec, v_vec))
+        coefficients = self.coefficients
+        # coefficients = input_vals["coefficients"]
+        
+        matrix = self.function.space.compute_basis_matrix(parametric_coordinates)
+
+        output_vals["output"] = matrix @ coefficients
+
+    def compute_derivatives(self, input_vals, output_vals, derivatives):
+        u_vec = input_vals["u_vec"]
+        v_vec = input_vals["v_vec"]
+        parametric_coordinates = np.hstack((u_vec, v_vec))
+        coefficients = self.coefficients
+        # coefficients = input_vals["coefficients"]
+
+        # matrix = self.function.space.compute_basis_matrix(parametric_coordinates)
+        matrix_u = self.function.space.compute_basis_matrix(parametric_coordinates, (1,0)).toarray()
+        matrix_v = self.function.space.compute_basis_matrix(parametric_coordinates, (0,1)).toarray()
+
+        u_derivative = matrix_u @ coefficients
+        v_derivative = matrix_v @ coefficients
+
+        derivatives['output', 'u_vec'] = sps.block_diag([u_derivative[i].reshape(-1,1) for i in range(u_vec.shape[0])])                           
+        derivatives['output', 'v_vec'] = sps.block_diag([v_derivative[i].reshape(-1,1) for i in range(v_vec.shape[0])])
+        # derivatives['output', 'coefficients'] = sps.block_diag([matrix for _ in range(self.num_phys)])
+
+    def compute_hessian(self, input_vals, output_vals, hessian):
+        u_vec = input_vals["u_vec"]
+        v_vec = input_vals["v_vec"]
+        parametric_coordinates = np.hstack((u_vec, v_vec))
+        coefficients = self.coefficients
+        # coefficients = input_vals["coefficients"]
+        num_points = u_vec.shape[0]
+
+        matrix_uu = self.function.space.compute_basis_matrix(parametric_coordinates, (2,0)).toarray()
+        matrix_vv = self.function.space.compute_basis_matrix(parametric_coordinates, (0,2)).toarray()
+        matrix_uv = self.function.space.compute_basis_matrix(parametric_coordinates, (1,1)).toarray()
+
+        du2 = matrix_uu @ coefficients
+        dv2 = matrix_vv @ coefficients
+        duv = matrix_uv @ coefficients
+
+        du2_diags = []
+        dv2_diags = []
+        duv_diags = []
+        for i in range(num_points):
+            du2_diag = np.zeros((num_points*self.num_phys**2, 1))
+            dv2_diag = np.zeros((num_points*self.num_phys**2, 1))
+            duv_diag = np.zeros((num_points*self.num_phys**2, 1))
+            du2_diag[::num_points**2] = du2[i].reshape(-1,1)
+            dv2_diag[::num_points**2] = dv2[i].reshape(-1,1)
+            duv_diag[::num_points**2] = duv[i].reshape(-1,1)
+            du2_diags.append(du2_diag)
+            dv2_diags.append(dv2_diag)
+            duv_diags.append(duv_diag)
+
+        hessian['output', 'u_vec', 'u_vec'] = sps.block_diag(du2_diags)
+        hessian['output', 'v_vec', 'v_vec'] = sps.block_diag(dv2_diags)
+        hessian['output', 'u_vec', 'v_vec'] = sps.block_diag(duv_diags)
+
+        # hessian['output', 'coefficients', 'u_vec'] = sps.csr_matrix((num_points*self.num_phys, num_points*self.num_phys))
+        # hessian['output', 'coefficients', 'v_vec'] = sps.csr_matrix((num_points*self.num_phys, num_points*self.num_phys))
+
+class DenseBasisMatrix(csdl.CustomExplicitOperation):
+    def __init__(self, function:lfs.Function):
+        super().__init__()
+        
+        self.function = function
+        self.num_parametric_dimensions = 2
+        self.num_phys = function.num_physical_dimensions
+
+    def evaluate(self, parametric_coordinates):
+        if len(parametric_coordinates.shape) != 2:
+            parametric_coordinates = parametric_coordinates.reshape((-1, self.num_parametric_dimensions))
+        
+
+        u_vec = parametric_coordinates[:,0]
+        self.declare_input("u_vec", u_vec)
+        v_vec = parametric_coordinates[:,1]
+        self.declare_input("v_vec", v_vec)
+        
+        num_points = u_vec.shape[0]
+
+        matrix = self.create_output("matrix", (num_points, np.prod(self.function.space.coefficients_shape)))
+
+        return matrix
+    
+    def compute(self, input_vals, output_vals):
+        u_vec = input_vals["u_vec"]
+        v_vec = input_vals["v_vec"]
+        parametric_coordinates = np.hstack((u_vec, v_vec))
+        
+        matrix = self.function.space.compute_basis_matrix(parametric_coordinates)
+
+        output_vals["matrix"] = matrix.toarray()
+
+
+    def compute_derivatives(self, input_vals, output_vals, derivatives):
+        u_vec = input_vals["u_vec"]
+        v_vec = input_vals["v_vec"]
+        parametric_coordinates = np.hstack((u_vec, v_vec))
+
+        matrix_u = self.function.space.compute_basis_matrix(parametric_coordinates, (1,0))
+        matrix_v = self.function.space.compute_basis_matrix(parametric_coordinates, (0,1))
+
+        derivatives['matrix', 'u_vec'] = matrix_u.toarray()
+        derivatives['matrix', 'v_vec'] = matrix_v.toarray()
+
 class SurfaceMatrixProduct(Operation):
     def __init__(self, u_vec, v_vec, function, d_order):
         super().__init__(u_vec, v_vec)
@@ -40,24 +182,15 @@ class SurfaceMatrixProduct(Operation):
 
     def compute_inline(self, u_vec, v_vec):
         parametric_coordinates = np.hstack((u_vec, v_vec))
-        parametric_coordinates[parametric_coordinates < 0] = 0
-        parametric_coordinates[parametric_coordinates > 1] = 1
-
         coefficients = self.coefficients
         if self.d_order == 0: 
             matrix = self.function.space.compute_basis_matrix(parametric_coordinates)
-            values = matrix @ coefficients
-            if values.shape[0] > 1:
-                values = values.reshape((values.shape[0], 1, values.shape[1]))
-            return values
+            return matrix @ coefficients
         elif self.d_order == 1:
             matrix_u = self.function.space.compute_basis_matrix(parametric_coordinates, (1,0))
             matrix_v = self.function.space.compute_basis_matrix(parametric_coordinates, (0,1))
             du = matrix_u @ coefficients
             dv = matrix_v @ coefficients
-            if du.shape[0] > 1:
-                du = du.reshape((du.shape[0], 1, du.shape[1]))
-                dv = dv.reshape((dv.shape[0], 1, dv.shape[1]))
             return du, dv
         elif self.d_order == 2:
             matrix_uu = self.function.space.compute_basis_matrix(parametric_coordinates, (2,0))
@@ -66,10 +199,6 @@ class SurfaceMatrixProduct(Operation):
             du2 = matrix_uu @ coefficients
             dv2 = matrix_vv @ coefficients
             duv = matrix_uv @ coefficients
-            if du2.shape[0] > 1:
-                du2 = du2.reshape((du2.shape[0], 1, du2.shape[1]))
-                dv2 = dv2.reshape((dv2.shape[0], 1, dv2.shape[1]))
-                duv = duv.reshape((duv.shape[0], 1, duv.shape[1]))
             return du2, dv2, duv
     
     def evaluate_vjp(self, cotangents, u_vec, v_vec, *outputs):
@@ -94,18 +223,6 @@ class SurfaceMatrixProduct(Operation):
                 cotangents.accumulate(v_vec, csdl.sum(cotangents[dv]*dv2, axes=(1,)))
         else:
             raise ValueError("Higher order derivatives not supported yet.")
-
-    def compute_jax(self, *args):
-        from csdl_alpha.backends.jax.utils import fallback_to_inline_jax
-
-        return fallback_to_inline_jax(self, *args)
-
-        import jax as jax
-        outputs = jax.pure_callback(
-            self.compute_inline, 
-            [jax.ShapeDtypeStruct(output.shape, np.float64) for output in self.outputs]
-        )(*args)
-        return tuple(outputs)
 
 
 def compute_smp(u_vec, v_vec, function, d_order=0):
@@ -136,7 +253,7 @@ class Function:
     name : str = None
 
     def __post_init__(self):
-        if not isinstance(self.coefficients, csdl.Variable):
+        if isinstance(self.coefficients, (np.ndarray, float)):
             self.coefficients = csdl.Variable(value=self.coefficients)
 
         if len(self.coefficients.shape) == 1:
@@ -850,185 +967,40 @@ class Function:
 
         # Use the parametric coordinate corresponding to each closest point as the initial guess for the Newton iterations
         initial_guess = parametric_grid_search[closest_point_indices]
-        # print('initial guess', initial_guess)
-
-        # initial_guess = np.zeros(initial_guess.shape)+0.5
-        # print('initial guess', initial_guess)
-
 
         external_rec = csdl.get_current_recorder()
         external_rec.stop()
 
-
-        rec = csdl.Recorder(inline=False, debug=False)
+        rec = csdl.Recorder()
         rec.start()
 
-        # precondition initial guesses
-        initial_guess[initial_guess < 1e-3] = 1e-2
-        initial_guess[initial_guess > 1-1e-3] = 1-1e-2
-        initial_guesses_csdl = csdl.Variable(value=np.arctanh(2*initial_guess-1))
-        points_csdl = csdl.Variable(value=points)
-        current_guess_csdl = csdl.Variable(value=np.zeros(initial_guess.shape))
+        para_points = csdl.Variable(value=initial_guess.copy())
+        u_vec = para_points[:, 0]
+        v_vec = para_points[:, 1]
+        # function_values = SurfaceMatrixProduct(self).evaluate(para_points)
+        function_values = compute_smp(u_vec, v_vec, self)
 
-        vmap = True
+        displacements = points - function_values
 
-        if vmap:
-            rec._enter_subgraph(add_missing_variables=True)
-
-            points_csdl_i = csdl.Variable(shape=(points_csdl.shape[1],), value=0)
-            initial_guesses_csdl_i = csdl.Variable(shape=(initial_guesses_csdl.shape[1],), value=0)
-
-            xi = csdl.Variable(value=0, shape=(initial_guesses_csdl.shape[1],))
-            ti = (csdl.tanh(xi)+1)/2
-            u_vec = ti[0]
-            v_vec = ti[1]
-            function_values = compute_smp(u_vec, v_vec, self).flatten()
-            displacements = points_csdl_i - function_values
-            if direction is None:
-                residual = csdl.norm(displacements+1e-6)
-            else:
-                # raise NotImplementedError
-                # residual = csdl.norm(csdl.cross(direction, displacements))
-                grid_search_distances_along_axis = csdl.inner(displacements, direction)
-                residual = (1 + rho)*csdl.norm(displacements)**2 - grid_search_distances_along_axis**2
-
-            solver = csdl.nonlinear_solvers.Newton(tolerance=newton_tolerance, max_iter=max_newton_iterations)
-            grad = csdl.derivative(residual, xi)[0]
-            solver.add_state(xi, grad, initial_value=initial_guesses_csdl_i)
-            solver.run()
-            t0 = (csdl.tanh(xi)+1)/2
-
-            body_graph = rec.active_graph
-            rec._exit_subgraph()
-
-            from csdl_alpha.src.operations.loops.vloop import BLoop
-            unbatched_inputs = body_graph.inputs
-            bloop = BLoop(
-                body=body_graph,
-                batched_inputs=[(points_csdl, points_csdl_i), (initial_guesses_csdl, initial_guesses_csdl_i)],
-                unbatched_inputs=unbatched_inputs,
-                batched_outputs=[(current_guess_csdl, t0)],
-            )
-            bloop.finalize_and_return_outputs()
-
+        if direction is None:
+            residual = csdl.norm(displacements, axes=(1,))
         else:
-            for i in csdl.frange(initial_guess.shape[0]):
-                xi = csdl.Variable(value=0, shape=(initial_guesses_csdl.shape[1],))
-                ti = (csdl.tanh(xi)+1)/2
-                u_vec = ti[0]
-                v_vec = ti[1]
-                function_values = compute_smp(u_vec, v_vec, self).flatten()
-                displacements = points_csdl[i] - function_values
-                if direction is None:
-                    residual = csdl.norm(displacements+1e-6)
-                else:
-                    # raise NotImplementedError
-                    # residual = csdl.norm(csdl.cross(direction, displacements))
-                    grid_search_distances_along_axis = csdl.inner(displacements, direction)
-                    residual = (1 + rho)*csdl.norm(displacements)**2 - grid_search_distances_along_axis**2
+            # raise NotImplementedError
+            residual = csdl.cross(direction, displacements)
 
-                solver = csdl.nonlinear_solvers.Newton(tolerance=newton_tolerance, max_iter=max_newton_iterations)
-                grad = csdl.derivative(residual, xi)[0]
-                solver.add_state(xi, grad, initial_value=initial_guesses_csdl[i])
-                solver.run()
-                t0 = (csdl.tanh(xi)+1)/2
-                current_guess_csdl = current_guess_csdl.set(csdl.slice[i], t0)
+        grad = csdl.Variable(shape=para_points.shape, value=0.)
+        hess = csdl.Variable(shape=(para_points.shape[0]*2, para_points.shape[1]*2), value=0.)
+        for i in range(para_points.shape[0]):
+            grad_i = csdl.derivative(residual[i], para_points)[:,i]
+            grad = grad.set(csdl.slice[i], grad_i.flatten())
+            hess = hess.set(csdl.slice[2*i:2*i+2,2*i:2*i+2], csdl.derivative(grad_i, para_points)[2*i:2*i+2,2*i:2*i+2])
 
+        # gradient = csdl.derivative(residual, para_points)
+        # hessian = csdl.derivative(gradient, para_points)
 
-        # jax_fn = csdl.jax.create_jax_function(rec.active_graph, [current_guess_csdl], [points_csdl])
-        jax_interface = csdl.jax.create_jax_interface(points_csdl, current_guess_csdl, rec.active_graph, device='gpu')
-
-        rec.stop()
-        import jax.numpy as jnp
-        import time
-        t1 = time.time()
-        current_guess = jax_interface({points_csdl: points_csdl.value})[current_guess_csdl]
-        print('run 1 time', time.time()-t1)
-        # t2 = time.time()
-        # current_guess = jax_interface({points_csdl: points_csdl.value})[current_guess_csdl]
-        # print('run 2 time', time.time()-t2)
-
-        external_rec.start()
-
-        if plot:
-            projection_results = self.evaluate(current_guess).value
-            plotting_elements = []
-            plotting_elements.append(lfs.plot_points(points, color='#00629B', size=10, show=False))
-            plotting_elements.append(lfs.plot_points(projection_results, color='#C69214', size=10, show=False))
-            self.plot(opacity=0.8, additional_plotting_elements=plotting_elements, show=True)
-
-        if do_pickles:
-            # Save the projection
-            characters = string.ascii_letters + string.digits  # Alphanumeric characters
-            # Generate a random string of the specified length
-            random_string = ''.join(random.choice(characters) for _ in range(6))
-            projections_folder = 'stored_files/projections'
-            name_space_file_path = projections_folder + '/name_space_dict.pickle'
-            name_space_dict[long_name_space] = random_string
-            with open(name_space_file_path, 'wb+') as handle:
-                pickle.dump(name_space_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-            with open(projections_folder + f'/{random_string}.pickle', 'wb+') as handle:
-                pickle.dump(current_guess, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-        return current_guess
-        # obj = csdl.sum(residual)
-        # obj.set_as_objective()
-        # sim = csdl.experimental.PySimulator(rec)
-        # sim.check_totals()
+        # print(gradient.shape)
+        # print(hessian.shape)
         # exit()
-
-
-        # grad = csdl.Variable(shape=para_points.shape, value=0.)
-        # hess = csdl.Variable(shape=(para_points.shape[0], para_points.shape[1], para_points.shape[1]), value=0.)
-        # for i in range(para_points.shape[0]):
-        #     grad_i = csdl.derivative(residual[i], para_points)[0,2*i:2*i+2]
-        #     # print(grad_i.value)
-        #     grad = grad.set(csdl.slice[i], grad_i)
-        #     hess_i = csdl.derivative(grad_i, para_points)[:,2*i:2*i+2]
-        #     # print(hess_i.value)
-        #     hess = hess.set(csdl.slice[i], hess_i)
-
-        # print('grad', grad.value)
-        # print('hess', hess.value)
-
-        # # now finite differencing (gradient)
-        # step = 1e-5
-        # base_val = residual.value.copy()
-        # base_para_val = para_points.value.copy()
-        # grad_fd = np.zeros(para_points.shape)
-        # for i in range(para_points.shape[0]):
-        #     for j in range(para_points.shape[1]):
-        #         para_points.value[i,j] += step
-        #         rec.execute()
-        #         grad_fd[i,j] = (residual.value - base_val)/step
-        #         para_points.value = base_para_val.copy()
-        # print('grad fd', grad_fd)
-
-        # # now finite differencing (hessian)
-        # step = 1e-3
-        # base_val = grad.value.copy()
-        # base_para_val = para_points.value.copy()
-        # hess_fd = np.zeros(para_points.shape+grad.shape)
-        # for i in range(para_points.shape[0]):
-        #     for j in range(para_points.shape[1]):
-        #         para_points.value[i,j] += step
-        #         rec.execute()
-        #         hess_fd[i,j] = (grad.value - base_val)/step
-        #         para_points.value = base_para_val.copy()
-        # print('hess fd', hess_fd)
-                
-        # # return
-
-
-        # # exit()
-
-        # # gradient = csdl.derivative(residual, para_points)
-        # # hessian = csdl.derivative(gradient, para_points)
-
-        # # print(gradient.shape)
-        # # print(hessian.shape)
-        # # exit()
 
         def compute_grad_hess(current_guess):
             para_points.value = current_guess
@@ -1059,6 +1031,8 @@ class Function:
         for j in range(max_newton_iterations):
             # Perform B-spline evaluations needed for gradient and hessian (0th, 1st, and 2nd order derivatives needed)
             gradient, hessian = compute_grad_hess(current_guess)
+            print(gradient)
+            print(hessian)
 
             # Remove dof that are on constrant boundary and want to leave (active subspace method)
             coordinates_to_remove_on_lower_boundary = np.logical_and(current_guess[points_left_to_converge] == 0, gradient > 0)
@@ -1077,7 +1051,7 @@ class Function:
             total_gradient_norm = 0.
             counter = 0
             for i in range(points_left_to_converge.shape[0]):
-                reduced_gradient = gradient[i, indices_to_keep[counter]]
+                reduced_gradient = gradient#[i, indices_to_keep[counter]]
 
                 # if np.linalg.norm(reduced_gradient) < newton_tolerance:
                 #     points_left_to_converge = np.delete(points_left_to_converge, counter)
@@ -1085,10 +1059,10 @@ class Function:
                 #     continue
 
                 # # This is after check so it doesn't throw error
-                reduced_hessian = hessian[np.ix_(np.array([i]), indices_to_keep[counter], indices_to_keep[counter])][0]    
+                # reduced_hessian = hessian[np.ix_(np.array([i]), indices_to_keep[counter], indices_to_keep[counter])][0]    
 
-                reduced_gradients.append(reduced_gradient)
-                reduced_hessians.append(reduced_hessian)
+                # reduced_gradients.append(reduced_gradient)
+                # reduced_hessians.append(reduced_hessian)
                 total_gradient_norm += np.linalg.norm(reduced_gradient)
                 counter += 1
 
@@ -1132,13 +1106,13 @@ class Function:
         # }
         # optimizer = SNOPT(prob, solver_options=snopt_options)
 
-        # optimizer.solve()
+        optimizer.solve()
 
         # solver = csdl.nonlinear_solvers.Newton(tolerance=newton_tolerance, max_iter=max_newton_iterations)
         # solver.add_state(current_guess, residual)
         # solver.run()
-        # current_guess = current_guess.value
-        # rec.stop()
+        current_guess = current_guess.value
+        rec.stop()
 
         external_rec.start()
 
