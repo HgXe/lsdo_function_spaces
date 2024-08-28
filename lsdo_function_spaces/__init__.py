@@ -14,6 +14,7 @@ from .core.spaces.polynomial_space import PolynomialSpace
 from .core.spaces.conditional_space import ConditionalSpace
 from .core.spaces.idw_space import IDWFunctionSpace
 from .core.spaces.constant_space import ConstantSpace
+from .core.spaces.frequency_space import FrequencySpace
 
 # utilities
 from .utils.plotting_functions import plot_points, plot_curve, plot_surface, show_plot

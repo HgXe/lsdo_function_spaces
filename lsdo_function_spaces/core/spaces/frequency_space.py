@@ -4,51 +4,59 @@ from lsdo_function_spaces import FunctionSpace, Function
 from scipy.spatial.distance import cdist
 from dataclasses import dataclass
 from typing import Union
-from numpy.polynomial import polynomial as poly
+import csdl_alpha as csdl
 
-class PolynomialSpace(FunctionSpace):
-    def __init__(self, num_parametric_dimensions:int, order:Union[int, tuple[int]]):
+
+class FrequencySpace(FunctionSpace):
+    def __init__(self, num_parametric_dimensions:int, order:tuple[int]):
         """
-        Polynomial Function Space.
-
-        This function space represents a grid of points in a parametric space using n-th order polynomials method.
-        It provides methods to compute the basis matrix and the fitting map.
+        Frequency space - fit via fourrier transform.
 
         Parameters
         ----------
         num_parametric_dimensions : int
             The number of parametric dimensions.
-        order : float
-            The order of the inverse distance weighting function.
-
+        frequencies : np.ndarray
+            The frequencies of the fourrier series. shape should be (num_frequencies, num_parametric_dimensions) 
         """
+        if isinstance(order, int):
+            order = (order, ) * num_parametric_dimensions
         self.order = order
-        if isinstance(self.order, int):
-            self.order = (self.order,)*num_parametric_dimensions
 
-        self.size = np.prod([order + 1 for order in self.order])
-        super().__init__(num_parametric_dimensions, (self.size,))
+        super().__init__(num_parametric_dimensions, (np.prod(order),))
 
     def compute_basis_matrix(self, parametric_coordinates:np.ndarray, parametric_derivative_orders:np.ndarray=None, expansion_factor:int=None) -> np.ndarray:
         """
         Compute the basis matrix for the given parametric coordinates.
         """
-        if parametric_derivative_orders is not None:
-            raise NotImplementedError('PolynomialSpace does not support derivatives')
-        if self.num_parametric_dimensions == 1:
-            weights = poly.polyvander(parametric_coordinates, self.order)
-        elif self.num_parametric_dimensions == 2:
-            if len(parametric_coordinates.shape) == 1:
-                parametric_coordinates = parametric_coordinates.reshape(-1, 2)
-            weights = poly.polyvander2d(parametric_coordinates[:, 0], parametric_coordinates[:, 1], self.order)
-        elif self.num_parametric_dimensions == 3:
-            weights = poly.polyvander3d(parametric_coordinates[:, 0], parametric_coordinates[:, 1], parametric_coordinates[:, 2], self.order)
-        else:
-            raise NotImplementedError('PolynomialSpace only supports up to 3 dimensions')
+        # if parametric_derivative_orders is not None:
+        #     raise NotImplementedError('FrequencySpace does not support derivatives')
+        weights = np.zeros((parametric_coordinates.shape[0], np.prod(self.order))*2+1)
+        start = 1
+        for i, order in enumerate(self.order):
+            end = start + 2*order
+            weights[:, start:end:2] = np.sin(2*np.pi*np.arange(1, order+1)*parametric_coordinates[:,i])
+            weights[:, start+1:end+1:2] = np.cos(2*np.pi*np.arange(1, order+1)*parametric_coordinates[:,i])
+            start = end
 
+        # add a column of ones for the constant term
+        weights[:, 0] = 1
         return weights
     
+    def generate_coefficient_vector(self, constant, sin_coefficients:csdl.Variable, cos_coefficients:csdl.Variable) -> csdl.Variable:
+        """
+        Generate the coefficient vector for the given sin and cos coefficients.
+        """
 
+        coefficients = np.zeros(np.prod(self.order)*2+1)
+        coefficients = csdl.Variable(value=coefficients)
+        start = 0
+        for i, order in enumerate(self.order):
+            end = start + 2*order
+            coefficients = coefficients.set(csdl.slice[start:end:2], sin_coefficients[i])
+            coefficients = coefficients.set(csdl.slice[start+1:end+1:2], cos_coefficients[i])
+        coefficients[0] = constant
+        return coefficients
 
 # def test_polynomial_space():
 #     num_parametric_dimensions = 2
